@@ -1,0 +1,176 @@
+#!/opt/OV/bin/perl -w
+
+# openview -> google bridge.
+#
+# Copyright Greg Baker (gregb@ifost.org.au) 2007.
+#
+
+use strict;
+
+package OpenViewGoogleBridge::Event;
+
+my (%swsrc) = ( C => 'xnmcollect',
+		D => 'snmpCollect (Data Collector)',
+		E => 'xnmevents',
+	        F => 'ovtopofix',
+		I => 'ipmap',
+		J => 'ovalarmsrv',
+		L => 'xnmloadmib',
+	        M => 'ovtopmd (map)',
+                N => 'netmon',
+                P => 'pmd',
+                R => 'ovrepld',
+                T => 'ovtrapd',
+		a => 'generic application', #14, for user-sendable events
+                b => 'nnm_bridge',
+                c => 'xnmtopoconf',
+                d => 'nmdemandpoll',
+                e => 'ECS Engine',
+                i => 'ECS Circuit',
+                l => 'loadhosts',
+                m => 'netmon mask change',
+                n => 'xnmpolling',
+                o => 'ovactiond',
+                p => 'ovspmd / ovpause / ovresume',
+                r => 'remote pmd',
+                s => 'xnmsnmpconf',
+                t => 'xnmtrap',
+                '6' => 'IPV6 Polling Agent',
+                '-' => 'Default',
+                '?' => 'None of the above'
+	      );
+my (%severity) = ( 1 => 'Normal', 2 => 'Warning', 3 => 'Minor', 4 => 'Major',
+		   5 => 'Critical' );
+
+sub constructor {
+  my ($line) = shift;
+  next unless $line =~ /^(.*);([^;]+)$/;
+  my ($head) = $1;
+  my ($tail) = $2; # everything after the last ;
+  my ($event) = {};
+  my (@fields) = split (/[ \t]/,$head);
+  $event->{'timestamp'} = $fields[0];
+  $event->{'category'} = $fields[1];
+  $event->{'human_time'} = join(" ",@fields[2..6]);
+  $event->{'event_src'} = $fields[7];
+  $event->{'swsrc'} = $fields[8];
+  my (@event_message) = ();
+  my ($i);
+  for ($i=9;$i <= $#fields;$i++) {
+    $event_message[$i-9] = $fields[$i];
+    #print " $i -> $fields[$i]\n";
+  }
+  $event->{'event_message'} = join(" ",@event_message);
+
+  @fields = split(/[ \t]/,$tail);
+  $event->{'severity'} = $fields[0]; #       Numeric severity of the event.
+  $event->{'event_oid'} = $fields[1]; #  Object Identifier of the event.
+  $event->{'ovobjid'} = $fields[2]; #  OpenView Object ID, or 0 if not available.
+  bless $event;
+  return $event;
+}
+
+sub print_brief {
+  my ($event) = shift;
+  if ($event->{'severity'} != 1) {
+    print $event->{'human_time'};
+    print ": [";
+    print $severity{$event->{'severity'}};
+    print "] (";
+    print $swsrc{$event->{'swsrc'}};
+    print ")\t";
+    print (uc $event->{'event_src'});
+    print "\t";
+    print $event->{'event_message'};
+    print "\n";
+  }
+}
+
+
+1;
+
+package OpenViewGoogleBridge::EventIndex;
+
+sub constructor {
+  my ($selfish) = {};
+  $selfish->{'index-by'} = shift;
+  $selfish->{'data'} = {};
+  bless $selfish;
+  return $selfish;
+}
+
+sub add_event {
+  my ($selfish) = shift;
+  my ($event) = shift;
+  my ($key) = $event->{$selfish->{'index-by'}};
+  if (!exists $selfish->{'data'}->{$key}) {
+    $selfish->{'data'}->{$key} = [];
+  }
+  push(@{$selfish->{'data'}->{$key}},$event);
+}
+
+sub names {
+  my ($selfish) = shift;
+  return sort keys %{$selfish->{'data'}};
+}
+
+sub get_events {
+  my ($selfish) = shift;
+  my ($key);
+  my (@answer) = ();
+  foreach $key (sort keys %{$selfish->{'data'}}) {
+    push(@answer,@{$selfish->{'data'}->{$key}});
+  }
+  return @answer;
+}
+
+package OpenViewGoogleBridge::DB;
+
+sub constructor {
+  my ($self);
+  $self = {};
+  $self->{'ready'} = 0;
+  bless $self;
+  return $self;
+};
+
+sub add_event {
+  my ($field);
+  my ($self) = shift;
+  my ($event) = shift;
+  if (!$self->{'ready'}) {
+    $self->{'indexes'} = {};
+    foreach $field (keys %$event) {
+      $self->{'indexes'}->{$field} = OpenViewGoogleBridge::EventIndex::constructor($field);
+    }
+    $self->{'ready'} = 1;
+  }
+  foreach $field (values %{$self->{'indexes'}}) {
+    $field->add_event($event);
+  }
+};
+
+sub dump_truck {
+  my ($self) = shift;
+  my ($field);
+  my ($event);
+  foreach $field (keys %{$self->{'indexes'}}) {
+    print "HERE ARE ALL THE EVENTS, SORTED BY \U$field\E\n";
+    foreach $event ($self->{'indexes'}->{$field}->get_events()) {
+      $event->print_brief();
+    }
+    print "\n\n\n\n";
+  }
+}
+package main;
+
+my ($event);
+open(EVENTS,"ovdumpevents|") || die "Couldn't run ovdumpevents: $!";
+my ($sysdb) = OpenViewGoogleBridge::DB::constructor ();
+while (<EVENTS>) {
+  $event = OpenViewGoogleBridge::Event::constructor($_);
+  $sysdb->add_event($event);
+}
+
+$sysdb->dump_truck();
+

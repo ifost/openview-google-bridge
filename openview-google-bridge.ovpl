@@ -95,6 +95,9 @@ sub constructor {
   my ($selfish) = {};
   $selfish->{'index-by'} = shift;
   $selfish->{'data'} = {};
+  $selfish->{'is_numeric'} = 1;
+  $selfish->{'keycount'} = 0;
+  $selfish->{'avgkeyvals'} = undef;
   bless $selfish;
   return $selfish;
 }
@@ -105,9 +108,41 @@ sub add_event {
   my ($key) = $event->{$selfish->{'index-by'}};
   if (!exists $selfish->{'data'}->{$key}) {
     $selfish->{'data'}->{$key} = [];
+    if ($key !~ /^\d+$/) { 
+      $selfish->{'is_numeric'} = 0;
+    }
+    $selfish->{'keycount'} += 1;
   }
   push(@{$selfish->{'data'}->{$key}},$event);
 }
+
+sub is_numeric {
+  my ($selfish) = shift;
+  if (!defined $selfish->{'is_numeric'}) {
+    $selfish->{'is_numeric'} = !grep($_ !~ /^\d+$/,keys %{$selfish->{'data'}});
+  }
+  return $selfish->{'is_numeric'};
+}
+
+sub keycount { 
+  my ($selfish) = shift;
+  return $selfish->{'keycount'};
+  #return (scalar keys %{$selfish->{'data'}});
+}
+
+sub avg_values_per_key {
+  my ($sum) = 0;
+  my ($selfish) = shift;
+  my ($values);
+  if (!defined ($selfish->{'avgkeyvals'})) {
+    foreach $values (values %{$selfish->{'data'}}) {
+      $sum += scalar @$values;
+    }
+    $selfish->{'avgkeyvals'} = ($sum * 1.0) / ($selfish->keycount() * 1.0);
+  }
+  return $selfish->{'avgkeyvals'};
+}
+
 
 sub names {
   my ($selfish) = shift;
@@ -141,6 +176,7 @@ sub add_event {
   if (!$self->{'ready'}) {
     $self->{'indexes'} = {};
     foreach $field (keys %$event) {
+      next if $field eq 'human_time';
       $self->{'indexes'}->{$field} = OpenViewGoogleBridge::EventIndex::constructor($field);
     }
     $self->{'ready'} = 1;
@@ -162,6 +198,23 @@ sub dump_truck {
     print "\n\n\n\n";
   }
 }
+
+sub dump_index_info {
+  my ($self) = shift;
+  my ($field);
+  my ($idx);
+  foreach $field (keys %{$self->{'indexes'}}) {
+    $idx = $self->{'indexes'}->{$field};
+    print "INDEX \U$field\E: ";
+    print "is numeric, " if $idx->is_numeric;
+    print "has ", ($idx->keycount()), " keys, ";
+    print "and ";
+    print "has " . ($idx->avg_values_per_key()) . " values per key\n";
+    #print "\t( = " . ($idx->keycount() * $idx->avg_values_per_key()) . ")\n";
+#    print join(" ",$idx->names());
+    print "\n";
+  }
+}
 package main;
 
 my ($event);
@@ -172,5 +225,6 @@ while (<EVENTS>) {
   $sysdb->add_event($event);
 }
 
-$sysdb->dump_truck();
+#$sysdb->dump_truck();
+$sysdb->dump_index_info();
 
